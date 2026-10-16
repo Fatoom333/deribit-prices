@@ -1,0 +1,94 @@
+# Dev-oriented stack. Credentials come from .env (see .env.example); defaults match it.
+# DATABASE_URL and REDIS_URL can be overridden from .env or the shell; otherwise they are
+# built from the POSTGRES_* values and the service names.
+
+x-app: &app
+  build:
+    context: .
+    target: runtime
+  image: deribit-prices:latest
+  # The code is root-owned and the root filesystem is read-only; /tmp (tmpfs) is the
+  # only place the application can write (beat keeps its schedule file there).
+  read_only: true
+  tmpfs:
+    - /tmp
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-prices}}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-prices}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: ["uvicorn", "--factory", "app.main:create_app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  beat:
+    <<: *app
+    command: ["celery", "-A", "app.worker.celery_app", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Run with: docker compose --profile test run --rm tests
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    image: deribit-prices-tests:latest
+    environment:
+      TEST_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/prices_test
+    command: ["pytest", "-q", "-p", "no:cacheprovider"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

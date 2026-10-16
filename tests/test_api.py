@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_price_reader
-from app.api.routes import MAX_BIGINT
+from app.api.routes import MAX_BIGINT, MAX_PAGE_SIZE
 from app.config import Settings
 from app.domain import PriceRecord
 from app.main import create_app
@@ -18,6 +18,7 @@ class InMemoryPriceReader:
     def __init__(self, records: list[PriceRecord]) -> None:
         self._records = sorted(records, key=lambda record: record.timestamp)
         self.last_all_args: tuple[Ticker, int | None, int] | None = None
+        self.last_range_args: tuple[Ticker, int, int, int | None, int] | None = None
 
     def _for(self, ticker: Ticker) -> list[PriceRecord]:
         return [record for record in self._records if record.ticker == ticker]
@@ -33,8 +34,17 @@ class InMemoryPriceReader:
         records = self._for(ticker)
         return records[-1] if records else None
 
-    async def get_range(self, ticker: Ticker, date_from: int, date_to: int) -> list[PriceRecord]:
-        return [r for r in self._for(ticker) if date_from <= r.timestamp <= date_to]
+    async def get_range(
+        self,
+        ticker: Ticker,
+        date_from: int,
+        date_to: int,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[PriceRecord]:
+        self.last_range_args = (ticker, date_from, date_to, limit, offset)
+        records = [r for r in self._for(ticker) if date_from <= r.timestamp <= date_to][offset:]
+        return records if limit is None else records[:limit]
 
 
 def make_records() -> list[PriceRecord]:
@@ -94,15 +104,44 @@ def test_list_passes_limit_and_offset(client: TestClient, reader: InMemoryPriceR
     assert [item["timestamp"] for item in response.json()] == [1060]
 
 
-def test_list_defaults_to_no_limit(client: TestClient, reader: InMemoryPriceReader) -> None:
+def test_list_defaults_to_max_page_size(client: TestClient, reader: InMemoryPriceReader) -> None:
     client.get("/prices", params={"ticker": "eth_usd"})
 
-    assert reader.last_all_args == (Ticker.ETH_USD, None, 0)
+    assert reader.last_all_args == (Ticker.ETH_USD, MAX_PAGE_SIZE, 0)
 
 
-@pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 10001}, {"offset": -1}])
+PAGING_ERRORS = [{"limit": 0}, {"limit": MAX_PAGE_SIZE + 1}, {"offset": -1}]
+
+
+@pytest.mark.parametrize("params", PAGING_ERRORS)
 def test_list_validates_paging(client: TestClient, params: dict[str, int]) -> None:
     response = client.get("/prices", params={"ticker": "btc_usd", **params})
+
+    assert response.status_code == 422
+
+
+def test_range_passes_limit_and_offset(client: TestClient, reader: InMemoryPriceReader) -> None:
+    response = client.get(
+        "/prices/range",
+        params={"ticker": "btc_usd", "date_from": 0, "date_to": 2000, "limit": 1, "offset": 1},
+    )
+
+    assert response.status_code == 200
+    assert reader.last_range_args == (Ticker.BTC_USD, 0, 2000, 1, 1)
+    assert [item["timestamp"] for item in response.json()] == [1060]
+
+
+def test_range_defaults_to_max_page_size(client: TestClient, reader: InMemoryPriceReader) -> None:
+    client.get("/prices/range", params={"ticker": "btc_usd", "date_from": 0, "date_to": 2000})
+
+    assert reader.last_range_args == (Ticker.BTC_USD, 0, 2000, MAX_PAGE_SIZE, 0)
+
+
+@pytest.mark.parametrize("params", PAGING_ERRORS)
+def test_range_validates_paging(client: TestClient, params: dict[str, int]) -> None:
+    response = client.get(
+        "/prices/range", params={"ticker": "btc_usd", "date_from": 0, "date_to": 2000, **params}
+    )
 
     assert response.status_code == 422
 

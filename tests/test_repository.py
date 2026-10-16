@@ -83,6 +83,12 @@ async def test_get_range_is_inclusive(repo: PriceRepository) -> None:
     assert [r.timestamp for r in found] == [2, 3, 4]
 
 
+async def test_get_range_limit_and_offset(repo: PriceRepository) -> None:
+    await repo.add_many([record(Ticker.BTC_USD, t) for t in (1, 2, 3, 4, 5)])
+    page = await repo.get_range(Ticker.BTC_USD, 2, 5, limit=2, offset=1)
+    assert [r.timestamp for r in page] == [3, 4]
+
+
 async def test_get_range_outside_data_is_empty(repo: PriceRepository) -> None:
     await repo.add_many([record(Ticker.BTC_USD, 1)])
     assert await repo.get_range(Ticker.BTC_USD, 10, 20) == []

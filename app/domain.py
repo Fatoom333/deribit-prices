@@ -44,7 +44,12 @@ class PriceReader(Protocol):
     async def get_latest(self, ticker: Ticker) -> PriceRecord | None: ...
 
     async def get_range(
-        self, ticker: Ticker, date_from: int, date_to: int
+        self,
+        ticker: Ticker,
+        date_from: int,
+        date_to: int,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[PriceRecord]:
         """Records with date_from <= timestamp <= date_to (inclusive on both ends)."""
         ...

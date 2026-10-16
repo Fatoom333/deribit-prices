@@ -62,7 +62,12 @@ class PriceRepository:
         return records[0] if records else None
 
     async def get_range(
-        self, ticker: Ticker, date_from: int, date_to: int
+        self,
+        ticker: Ticker,
+        date_from: int,
+        date_to: int,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[PriceRecord]:
         """Records with date_from <= timestamp <= date_to, ordered by timestamp ascending."""
         statement = (
@@ -73,6 +78,8 @@ class PriceRepository:
                 PriceRow.timestamp <= date_to,
             )
             .order_by(PriceRow.timestamp)
+            .limit(limit)
+            .offset(offset)
         )
         return await self._fetch(statement)
 
